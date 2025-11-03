@@ -26,7 +26,11 @@
         @endforeach
         @include('linkstack.elements.icons')
         @include('linkstack.elements.buttons')
+        
         @yield('content')
         @include('linkstack.modules.footer')
     @endpush
+    
+ 
+
 @endsection

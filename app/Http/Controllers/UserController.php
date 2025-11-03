@@ -81,10 +81,10 @@ class UserController extends Controller
         return view('studio/index', ['greeting' => $userinfo->name, 'toplinks' => $topLinks, 'links' => $links, 'clicks' => $clicks, 'pageStats' => $pageStats]);
     }
 
-    //Show littlelink page. example => http://127.0.0.1:8000/+admin
+    // Show littlelink page. example => http://127.0.0.1:8000/+admin
     public function littlelink(request $request)
     {
-        if(isset($request->useif)){
+        if (isset($request->useif)) {
             $littlelink_name = User::select('littlelink_name')->where('id', $request->littlelink)->value('littlelink_name');
             $id = $request->littlelink;
         } else {
@@ -95,29 +95,27 @@ class UserController extends Controller
         if (empty($id)) {
             return abort(404);
         }
-     
+
         $userinfo = User::select('id', 'name', 'littlelink_name', 'littlelink_description', 'theme', 'role', 'block')->where('id', $id)->first();
         $information = User::select('name', 'littlelink_name', 'littlelink_description', 'theme')->where('id', $id)->get();
-        
+
         if ($userinfo->block == 'yes') {
             return abort(404);
         }
-        
-        $links = DB::table('links')
-        ->join('buttons', 'buttons.id', '=', 'links.button_id')
-        ->select('links.*', 'buttons.name') // Assuming 'links.*' to fetch all columns including 'type_params'
-        ->where('user_id', $id)
-        ->orderBy('up_link', 'asc')
-        ->orderBy('order', 'asc')
-        ->get();
 
-        // Loop through each link to decode 'type_params' and merge it into the link object
+        $links = DB::table('links')
+            ->join('buttons', 'buttons.id', '=', 'links.button_id')
+            ->select('links.*', 'buttons.name')
+            ->where('user_id', $id)
+            ->orderBy('up_link', 'asc')
+            ->orderBy('order', 'asc')
+            ->get();
+
+        // Decode and merge type_params onto each link object
         foreach ($links as $link) {
             if (!empty($link->type_params)) {
-                // Decode the JSON string into an associative array
                 $typeParams = json_decode($link->type_params, true);
                 if (is_array($typeParams)) {
-                    // Merge the associative array into the link object
                     foreach ($typeParams as $key => $value) {
                         $link->$key = $value;
                     }
@@ -125,10 +123,81 @@ class UserController extends Controller
             }
         }
 
-        return view('linkstack.linkstack', ['userinfo' => $userinfo, 'information' => $information, 'links' => $links, 'littlelink_name' => $littlelink_name]);
+        /* === associated-links: hide associated as big buttons & attach icons === */
+        if (\Illuminate\Support\Facades\Schema::hasTable('link_associations')) {
+            // 1) all link IDs currently on page
+            $linkIds = $links->pluck('id');
+
+            // 2) associations only for these links
+            $pairs = DB::table('link_associations')
+                ->whereIn('link_id', $linkIds)
+                ->select('link_id', 'associated_link_id')
+                ->get();
+
+            // 3) which IDs should be hidden as big buttons?
+            //    (only hide if that associated ID is also one of this user's page links)
+            $assocIdsToHide = $pairs->pluck('associated_link_id')
+                ->intersect($linkIds)   // keep only IDs that are on this page
+                ->unique()
+                ->values();
+
+            // 4) drop those links from the main list
+            $links = $links->reject(function ($l) use ($assocIdsToHide) {
+                return $assocIdsToHide->contains($l->id);
+            })->values();
+
+            // 5) build mapping: link_id -> [associated_link_id, ...]
+            $byLink = [];
+            foreach ($pairs as $p) {
+                $byLink[$p->link_id][] = $p->associated_link_id;
+            }
+
+            // 6) fetch associated link records (JOIN buttons to get platform/icon key)
+            $assocIds = array_values(array_unique($pairs->pluck('associated_link_id')->all()));
+            $assocLinks = collect();
+            if (!empty($assocIds)) {
+                $assocLinks = DB::table('links')
+                    ->join('buttons', 'buttons.id', '=', 'links.button_id')
+                    ->whereIn('links.id', $assocIds)
+                    ->select(
+                        'links.id',
+                        'links.title',
+                        'links.link',
+                        'links.custom_icon',
+                        'links.button_id',
+                        'buttons.name as platform'
+                    )
+                    ->get()
+                    ->keyBy('id');
+            }
+
+            // 7) attach 'associated' to each *remaining* main link, preserving order
+            foreach ($links as $l) {
+                $ids = $byLink[$l->id] ?? [];
+                $l->associated = [];
+                foreach ($ids as $aid) {
+                    if (isset($assocLinks[$aid])) {
+                        $l->associated[] = $assocLinks[$aid];
+                    }
+                }
+            }
+        } else {
+            foreach ($links as $l) {
+                $l->associated = [];
+            }
+        }
+        /* === END === */
+
+
+        return view('linkstack.linkstack', [
+            'userinfo' => $userinfo,
+            'information' => $information,
+            'links' => $links,
+            'littlelink_name' => $littlelink_name
+        ]);
     }
 
-    //Show littlelink page as home page if set in config
+    // Show littlelink page as home page if set in config
     public function littlelinkhome(request $request)
     {
         $littlelink_name = env('HOME_URL');
@@ -137,25 +206,23 @@ class UserController extends Controller
         if (empty($id)) {
             return abort(404);
         }
-     
+
         $userinfo = User::select('id', 'name', 'littlelink_name', 'littlelink_description', 'theme', 'role', 'block')->where('id', $id)->first();
         $information = User::select('name', 'littlelink_name', 'littlelink_description', 'theme')->where('id', $id)->get();
-        
-        $links = DB::table('links')
-        ->join('buttons', 'buttons.id', '=', 'links.button_id')
-        ->select('links.*', 'buttons.name') // Assuming 'links.*' to fetch all columns including 'type_params'
-        ->where('user_id', $id)
-        ->orderBy('up_link', 'asc')
-        ->orderBy('order', 'asc')
-        ->get();
 
-        // Loop through each link to decode 'type_params' and merge it into the link object
+        $links = DB::table('links')
+            ->join('buttons', 'buttons.id', '=', 'links.button_id')
+            ->select('links.*', 'buttons.name')
+            ->where('user_id', $id)
+            ->orderBy('up_link', 'asc')
+            ->orderBy('order', 'asc')
+            ->get();
+
+        // Decode and merge type_params
         foreach ($links as $link) {
             if (!empty($link->type_params)) {
-                // Decode the JSON string into an associative array
                 $typeParams = json_decode($link->type_params, true);
                 if (is_array($typeParams)) {
-                    // Merge the associative array into the link object
                     foreach ($typeParams as $key => $value) {
                         $link->$key = $value;
                     }
@@ -163,8 +230,81 @@ class UserController extends Controller
             }
         }
 
-        return view('linkstack.linkstack', ['userinfo' => $userinfo, 'information' => $information, 'links' => $links, 'littlelink_name' => $littlelink_name]);
+        /* === associated-links: hide associated as big buttons & attach icons === */
+        if (\Illuminate\Support\Facades\Schema::hasTable('link_associations')) {
+            // 1) all link IDs currently on page
+            $linkIds = $links->pluck('id');
+
+            // 2) associations only for these links
+            $pairs = DB::table('link_associations')
+                ->whereIn('link_id', $linkIds)
+                ->select('link_id', 'associated_link_id')
+                ->get();
+
+            // 3) which IDs should be hidden as big buttons?
+            //    (only hide if that associated ID is also one of this user's page links)
+            $assocIdsToHide = $pairs->pluck('associated_link_id')
+                ->intersect($linkIds)   // keep only IDs that are on this page
+                ->unique()
+                ->values();
+
+            // 4) drop those links from the main list
+            $links = $links->reject(function ($l) use ($assocIdsToHide) {
+                return $assocIdsToHide->contains($l->id);
+            })->values();
+
+            // 5) build mapping: link_id -> [associated_link_id, ...]
+            $byLink = [];
+            foreach ($pairs as $p) {
+                $byLink[$p->link_id][] = $p->associated_link_id;
+            }
+
+            // 6) fetch associated link records (JOIN buttons to get platform/icon key)
+            $assocIds = array_values(array_unique($pairs->pluck('associated_link_id')->all()));
+            $assocLinks = collect();
+            if (!empty($assocIds)) {
+                $assocLinks = DB::table('links')
+                    ->join('buttons', 'buttons.id', '=', 'links.button_id')
+                    ->whereIn('links.id', $assocIds)
+                    ->select(
+                        'links.id',
+                        'links.title',
+                        'links.link',
+                        'links.custom_icon',
+                        'links.button_id',
+                        'buttons.name as platform'
+                    )
+                    ->get()
+                    ->keyBy('id');
+            }
+
+            // 7) attach 'associated' to each *remaining* main link, preserving order
+            foreach ($links as $l) {
+                $ids = $byLink[$l->id] ?? [];
+                $l->associated = [];
+                foreach ($ids as $aid) {
+                    if (isset($assocLinks[$aid])) {
+                        $l->associated[] = $assocLinks[$aid];
+                    }
+                }
+            }
+        } else {
+            foreach ($links as $l) {
+                $l->associated = [];
+            }
+        }
+        /* === END === */
+
+
+
+        return view('linkstack.linkstack', [
+            'userinfo' => $userinfo,
+            'information' => $information,
+            'links' => $links,
+            'littlelink_name' => $littlelink_name
+        ]);
     }
+
 
     //Redirect to user page
     public function userRedirect(request $request)
@@ -175,19 +315,20 @@ class UserController extends Controller
         if (empty($id)) {
             return abort(404);
         }
-     
+
         if (empty($user)) {
             return abort(404);
         }
 
-        return redirect(url('@'.$user));
+        return redirect(url('@' . $user));
     }
 
     //Show add/update form
+// Show add/update form
     public function AddUpdateLink($id = 0)
     {
         $linkData = $id ? Link::find($id) : new Link(['typename' => 'link', 'id' => '0']);
-    
+
         $data = [
             'LinkTypes' => LinkType::get(),
             'LinkData' => $linkData,
@@ -196,27 +337,73 @@ class UserController extends Controller
             'title' => "Predefined Site",
         ];
 
+        // --- restrict/select "associated links" properly ---
+        $userId = Auth::id();
+
+        // (A) links already associated TO THIS link (these must appear + be preselected)
+        $assocThis = [];
+        if ($id) {
+            $assocThis = DB::table('link_associations')
+                ->where('link_id', $id)
+                ->pluck('associated_link_id')
+                ->all();
+        }
+
+        // (B) links associated to OTHER links (these should be hidden)
+// limit to this user's links
+        $userLinkIds = DB::table('links')->where('user_id', $userId)->pluck('id');
+        $assocElsewhere = DB::table('link_associations')
+            ->whereIn('link_id', $userLinkIds)   // only this user's main links
+            ->when($id, fn($q) => $q->where('link_id', '!=', $id)) // exclude THIS link
+            ->pluck('associated_link_id')
+            ->unique()
+            ->values()
+            ->all();
+
+        $allowedPlatforms = ['bluesky', 'twitter', 'instagram'];
+
+        $allLinks = DB::table('links')
+            ->join('buttons', 'buttons.id', '=', 'links.button_id')
+            ->where('links.user_id', $userId)
+            // only allowed platforms (case-insensitive)
+            ->whereIn(DB::raw('LOWER(buttons.name)'), array_map('strtolower', $allowedPlatforms))
+            // never show the link itself
+            ->when($id, fn($q) => $q->where('links.id', '!=', $id))
+            // hide links already associated to OTHER links, but allow ones associated to THIS link
+            ->when(!empty($assocElsewhere), function ($q) use ($assocElsewhere, $assocThis) {
+                $hide = array_values(array_diff($assocElsewhere, $assocThis));
+                if (!empty($hide))
+                    $q->whereNotIn('links.id', $hide);
+            })
+            ->select('links.id', 'links.title', 'links.link', 'buttons.name as platform')
+            ->orderBy('links.up_link', 'asc')
+            ->orderBy('links.order', 'asc')
+            ->get();
+
+        $selectedAssoc = $assocThis;
+
         $data['typename'] = $linkData->type ?? 'predefined';
-    
+        $data['allLinks'] = $allLinks;
+        $data['selectedAssoc'] = $selectedAssoc;
+
+
         return view('studio/edit-link', $data);
     }
 
-    //Save add link
+
+    // Save add link
     public function saveLink(Request $request)
     {
         // Step 1: Validate Request
-        // $request->validate([
-        //     'link' => 'sometimes|url',
-        // ]);
-    
+        // $request->validate(['link' => 'sometimes|url']);
+
         // Step 2: Determine Link Type and Title
         $linkType = LinkType::findByTypename($request->typename);
         $LinkTitle = $request->title;
         $LinkURL = $request->link;
 
         // Step 3: Load Link Type Logic
-        if($request->typename == 'predefined' || $request->typename == 'link') {
-            // Determine button id based on whether a custom or predefined button is used
+        if ($request->typename == 'predefined' || $request->typename == 'link') {
             $button_id = ($request->typename == 'link') ? ($request->GetSiteIcon == 1 ? 2 : 1) : null;
             $button = ($request->typename != 'link') ? Button::where('name', $request->button)->first() : null;
 
@@ -225,75 +412,59 @@ class UserController extends Controller
                 'title' => $LinkTitle ?? $button?->alt,
                 'user_id' => Auth::user()->id,
                 'button_id' => $button?->id ?? $button_id,
-                'type' => $request->typename // Save the link type
+                'type' => $request->typename
             ];
         } else {
             $linkTypePath = base_path("blocks/{$linkType->typename}/handler.php");
             if (file_exists($linkTypePath)) {
                 include $linkTypePath;
                 $result = handleLinkType($request, $linkType);
-                
-                // Extract rules and linkData from the result
                 $rules = $result['rules'];
                 $linkData = $result['linkData'];
-            
-                // Validate the request
-                $validator = Validator::make($request->all(), $rules);
 
-                // Check if validation fails
+                $validator = Validator::make($request->all(), $rules);
                 if ($validator->fails()) {
                     return back()->withErrors($validator)->withInput();
                 }
 
-                $linkData['button_id'] = $linkData['button_id'] ?? 1; // Set 'button_id' unless overwritten by handleLinkType
-                $linkData['type'] = $linkType->typename; // Ensure 'type' is included in $linkData
+                $linkData['button_id'] = $linkData['button_id'] ?? 1;
+                $linkData['type'] = $linkType->typename;
             } else {
                 abort(404, "Link type logic not found.");
             }
-        }   
+        }
 
-        // Step 4: Handle Custom Parameters
-        // (Same as before)
+        // Step 4: Handle Custom Parameters (same as before)
 
         // Step 5: User and Button Information
         $userId = Auth::user()->id;
         $button = Button::where('name', $request->button)->first();
-        if ($button && empty($LinkTitle)) $LinkTitle = $button->alt;
+        if ($button && empty($LinkTitle))
+            $LinkTitle = $button->alt;
 
-        // Step 6: Prepare Link Data
-        // (Handled by the included file)
+        // Step 6: Prepare Link Data (handled above)
 
         // Step 7: Save or Update Link
         $OrigLink = Link::find($request->linkid);
-        $linkColumns = Schema::getColumnListing('links'); // Get all column names of links table
-        $filteredLinkData = array_intersect_key($linkData, array_flip($linkColumns)); // Filter $linkData to only include keys that are columns in the links table
-
-        // Combine remaining variables into one array and convert to JSON for the type_params column
+        $linkColumns = Schema::getColumnListing('links');
+        $filteredLinkData = array_intersect_key($linkData, array_flip($linkColumns));
         $customParams = array_diff_key($linkData, $filteredLinkData);
 
-            // Check if $linkType->custom_html is defined and not null
-            if (isset($linkType->custom_html)) {
-                // Add $linkType->custom_html to the $customParams array
-                $customParams['custom_html'] = $linkType->custom_html;
-            }
+        if (isset($linkType->custom_html)) {
+            $customParams['custom_html'] = $linkType->custom_html;
+        }
+        if (isset($linkType->ignore_container)) {
+            $customParams['ignore_container'] = $linkType->ignore_container;
+        }
+        if (isset($linkType->include_libraries)) {
+            $customParams['include_libraries'] = $linkType->include_libraries;
+        }
 
-            // Check if $linkType->ignore_container is defined and not null
-            if (isset($linkType->ignore_container)) {
-                // Add $linkType->ignore_container to the $customParams array
-                $customParams['ignore_container'] = $linkType->ignore_container;
-            }
-
-            // Check if $linkType->include_libraries is defined and not null
-            if (isset($linkType->include_libraries)) {
-                // Add $linkType->include_libraries to the $customParams array
-                $customParams['include_libraries'] = $linkType->include_libraries;
-            }
-        
         $filteredLinkData['type_params'] = json_encode($customParams);
 
         if ($OrigLink) {
             $currentValues = $OrigLink->getAttributes();
-            $nonNullFilteredLinkData = array_filter($filteredLinkData, function($value) {return !is_null($value);});
+            $nonNullFilteredLinkData = array_filter($filteredLinkData, fn($v) => !is_null($v));
             $updatedValues = array_merge($currentValues, $nonNullFilteredLinkData);
             $OrigLink->update($updatedValues);
             $message = "Link updated";
@@ -304,16 +475,53 @@ class UserController extends Controller
             $message = "Link added";
         }
 
+        /* -------- Step 7.5: sync associated links (pivot) -------- */
+        // the form must send: <select name="associated_links[]" multiple>...</select>
+        $linkId = $OrigLink ? $OrigLink->id : $link->id;
+
+        $allowedPlatforms = ['bluesky', 'twitter', 'instagram'];
+        $selected = (array) $request->input('associated_links', []);
+
+        // Re-filter selection: this user, not self, allowed platforms only
+        $selected = DB::table('links')
+            ->join('buttons', 'buttons.id', '=', 'links.button_id')
+            ->where('links.user_id', $userId)
+            ->whereIn('links.id', $selected)
+            ->where('links.id', '!=', $linkId)
+            ->whereIn('buttons.name', $allowedPlatforms)
+            ->pluck('links.id')
+            ->all();
+
+        // Optional hardening: remove anything already associated elsewhere
+        $alreadyAssociated = DB::table('link_associations')->pluck('associated_link_id')->toArray();
+        if (!empty($alreadyAssociated)) {
+            $selected = array_values(array_diff($selected, $alreadyAssociated));
+        }
+
+
+        if (!empty($selected)) {
+            $now = now();
+            $rows = array_map(fn($aid) => [
+                'link_id' => $linkId,
+                'associated_link_id' => $aid,
+                'created_at' => $now,
+            ], $selected);
+
+            DB::table('link_associations')->insert($rows);
+        }
+        /* -------- end Step 7.5 -------- */
+
         // Step 8: Redirect
         $redirectUrl = $request->input('param') == 'add_more' ? 'studio/add-link' : 'studio/links';
         return Redirect($redirectUrl)->with('success', $message);
     }
-    
+
+
     public function sortLinks(Request $request)
     {
-        $linkOrders  = $request->input("linkOrders", []);
+        $linkOrders = $request->input("linkOrders", []);
         $currentPage = $request->input("currentPage", 1);
-        $perPage     = $request->input("perPage", 0);
+        $perPage = $request->input("perPage", 0);
 
         if ($perPage == 0) {
             $currentPage = 1;
@@ -355,9 +563,9 @@ class UserController extends Controller
 
         if (substr($linkId, -1) == '+') {
             $linkWithoutPlus = str_replace('+', '', $linkId);
-            return redirect(url('info/'.$linkWithoutPlus));
+            return redirect(url('info/' . $linkWithoutPlus));
         }
-    
+
         $link = Link::find($linkId);
 
         if (empty($link)) {
@@ -390,10 +598,10 @@ class UserController extends Controller
 
         // Decode the JSON to a PHP array
         $data = json_decode($json, true);
-        
+
         // Create a new vCard object
         $vcard = new VCard();
-        
+
         // Set the vCard properties from the $data array
         $vcard->addName($data['last_name'], $data['first_name'], $data['middle_name'], $data['prefix'], $data['suffix']);
         $vcard->addCompany($data['organization']);
@@ -407,19 +615,19 @@ class UserController extends Controller
         $vcard->addPhoneNumber($data['cell_phone'], 'CELL');
         $vcard->addAddress($data['home_address_street'], '', $data['home_address_city'], $data['home_address_state'], $data['home_address_zip'], $data['home_address_country'], 'HOME');
         $vcard->addAddress($data['work_address_street'], '', $data['work_address_city'], $data['work_address_state'], $data['work_address_zip'], $data['work_address_country'], 'WORK');
-        
+
 
         // $vcard->addPhoto(base_path('img/1.png'));
-        
+
         // Generate the vCard file contents
         $file_contents = $vcard->getOutput();
-        
+
         // Set the file headers for download
         $headers = [
             'Content-Type' => 'text/x-vcard',
             'Content-Disposition' => 'attachment; filename="contact.vcf"'
         ];
-        
+
         Link::where('id', $linkId)->increment('click_number', 1);
 
         // Return the file download response
@@ -432,7 +640,7 @@ class UserController extends Controller
     {
         $userId = Auth::user()->id;
         $data['pagePage'] = 10;
-        
+
         $data['links'] = Link::select()->where('user_id', $userId)->orderBy('up_link', 'asc')->orderBy('order', 'asc')->paginate(99999);
         return view('studio/links', $data);
     }
@@ -446,11 +654,16 @@ class UserController extends Controller
 
         $directory = base_path("assets/favicon/icons");
         $files = scandir($directory);
-        foreach($files as $file) {
-        if (strpos($file, $linkId.".") !== false) {
-        $pathinfo = pathinfo($file, PATHINFO_EXTENSION);}}
+        foreach ($files as $file) {
+            if (strpos($file, $linkId . ".") !== false) {
+                $pathinfo = pathinfo($file, PATHINFO_EXTENSION);
+            }
+        }
         if (isset($pathinfo)) {
-        try{File::delete(base_path("assets/favicon/icons")."/".$linkId.".".$pathinfo);} catch (exception $e) {}
+            try {
+                File::delete(base_path("assets/favicon/icons") . "/" . $linkId . "." . $pathinfo);
+            } catch (exception $e) {
+            }
         }
 
         return redirect('/studio/links');
@@ -463,11 +676,16 @@ class UserController extends Controller
 
         $directory = base_path("assets/favicon/icons");
         $files = scandir($directory);
-        foreach($files as $file) {
-        if (strpos($file, $linkId.".") !== false) {
-        $pathinfo = pathinfo($file, PATHINFO_EXTENSION);}}
+        foreach ($files as $file) {
+            if (strpos($file, $linkId . ".") !== false) {
+                $pathinfo = pathinfo($file, PATHINFO_EXTENSION);
+            }
+        }
         if (isset($pathinfo)) {
-        try{File::delete(base_path("assets/favicon/icons")."/".$linkId.".".$pathinfo);} catch (exception $e) {}
+            try {
+                File::delete(base_path("assets/favicon/icons") . "/" . $linkId . "." . $pathinfo);
+            } catch (exception $e) {
+            }
         }
 
         return redirect('/studio/links');
@@ -524,8 +742,8 @@ class UserController extends Controller
         return view('studio/button-editor', ['custom_icon' => $custom_icon, 'custom_css' => $custom_css, 'buttonId' => $buttonId, 'buttons' => $buttons, 'link' => $link, 'title' => $title, 'order' => $order, 'id' => $linkId]);
     }
 
-    //Save edit link
-    public function editLink(request $request)
+    // Save edit link
+    public function editLink(Request $request)
     {
         $request->validate([
             'link' => 'required|exturl',
@@ -533,25 +751,76 @@ class UserController extends Controller
             'button' => 'required',
         ]);
 
-        if (stringStartsWith($request->link, 'http://') == 'true' or stringStartsWith($request->link, 'https://') == 'true' or stringStartsWith($request->link, 'mailto:') == 'true')
+        // --- Normalize link format ---
+        if (
+            stringStartsWith($request->link, 'http://') == 'true'
+            || stringStartsWith($request->link, 'https://') == 'true'
+            || stringStartsWith($request->link, 'mailto:') == 'true'
+        ) {
             $link1 = $request->link;
-        else
+        } else {
             $link1 = 'https://' . $request->link;
+        }
+
         if (stringEndsWith($request->link, '/') == 'true')
             $link = rtrim($link1, "/ ");
         else
-        $link = $link1;
+            $link = $link1;
+
         $title = $request->title;
         $order = $request->order;
         $button = $request->button;
         $linkId = $request->id;
+        $userId = Auth::id();
 
+        // --- Get button ID ---
         $buttonId = Button::select('id')->where('name', $button)->value('id');
 
-        Link::where('id', $linkId)->update(['link' => $link, 'title' => $title, 'order' => $order, 'button_id' => $buttonId]);
+        // --- Update link record ---
+        Link::where('id', $linkId)->update([
+            'link' => $link,
+            'title' => $title,
+            'order' => $order,
+            'button_id' => $buttonId,
+        ]);
 
-        return redirect('/studio/links');
+        /* --- Step 2: sync associated links --- */
+        // The form must include: <select name="associated_links[]" multiple>
+        $allowedPlatforms = ['bluesky', 'twitter', 'instagram'];
+        $selected = (array) $request->input('associated_links', []);
+
+        $selected = DB::table('links')
+            ->join('buttons', 'buttons.id', '=', 'links.button_id')
+            ->where('links.user_id', $userId)
+            ->whereIn('links.id', $selected)
+            ->where('links.id', '!=', $linkId)
+            ->whereIn('buttons.name', $allowedPlatforms)
+            ->pluck('links.id')
+            ->all();
+
+        // Optional hardening: remove anything already associated elsewhere
+        $alreadyAssociated = DB::table('link_associations')->pluck('associated_link_id')->toArray();
+        if (!empty($alreadyAssociated)) {
+            $selected = array_values(array_diff($selected, $alreadyAssociated));
+        }
+
+
+        // Insert new ones if any selected
+        if (!empty($selected)) {
+            $now = now();
+            $rows = array_map(fn($aid) => [
+                'link_id' => $linkId,
+                'associated_link_id' => $aid,
+                'created_at' => $now,
+            ], $selected);
+
+            DB::table('link_associations')->insert($rows);
+        }
+        /* --- End sync --- */
+
+        return redirect('/studio/links')->with('success', 'Link updated successfully');
     }
+
 
     //Save edit custom CSS + custom icon
     public function editCSS(request $request)
@@ -585,13 +854,13 @@ class UserController extends Controller
     {
         $userId = Auth::user()->id;
         $littlelink_name = Auth::user()->littlelink_name;
-    
+
         $validator = Validator::make($request->all(), [
             'littlelink_name' => [
                 'sometimes',
                 'max:255',
                 'string',
-                'isunique:users,id,'.$userId,
+                'isunique:users,id,' . $userId,
             ],
             'name' => 'sometimes|max:255|string',
             'image' => 'sometimes|image|mimes:jpeg,jpg,png,webp|max:2048', // Max file size: 2MB
@@ -601,11 +870,11 @@ class UserController extends Controller
             'image.mimes' => __('messages.The image must be') . ' JPEG, JPG, PNG, webP.',
             'image.max' => __('messages.The image size should not exceed 2MB'),
         ]);
-    
+
         if ($validator->fails()) {
             return redirect('/studio/page')->withErrors($validator)->withInput();
         }
-    
+
         $profilePhoto = $request->file('image');
         $pageName = $request->littlelink_name;
         $pageDescription = strip_tags($request->pageDescription, '<a><p><strong><i><ul><ol><li><blockquote><h2><h3><h4>');
@@ -616,16 +885,16 @@ class UserController extends Controller
         $sharebtn = $request->sharebtn;
         $tablinks = $request->tablinks;
 
-        if(env('HOME_URL') !== '' && $pageName != $littlelink_name && $littlelink_name == env('HOME_URL')){
+        if (env('HOME_URL') !== '' && $pageName != $littlelink_name && $littlelink_name == env('HOME_URL')) {
             EnvEditor::editKey('HOME_URL', $pageName);
         }
-    
+
         User::where('id', $userId)->update([
             'littlelink_name' => $pageName,
             'littlelink_description' => $pageDescription,
             'name' => $name
         ]);
-    
+
         if ($request->hasFile('image')) {
 
             // Delete the user's current avatar if it exists
@@ -633,17 +902,17 @@ class UserController extends Controller
                 $avatarName = findAvatar($userId);
                 unlink(base_path($avatarName));
             }
-            
+
             $fileName = $userId . '_' . time() . "." . $profilePhoto->extension();
             $profilePhoto->move(base_path('assets/img'), $fileName);
         }
-    
+
         if ($checkmark == "on") {
             UserData::saveData($userId, 'checkmark', true);
         } else {
             UserData::saveData($userId, 'checkmark', false);
         }
-    
+
         if ($sharebtn == "on") {
             UserData::saveData($userId, 'disable-sharebtn', false);
         } else {
@@ -655,7 +924,7 @@ class UserController extends Controller
         } else {
             UserData::saveData($userId, 'links-new-tab', false);
         }
-    
+
         return Redirect('/studio/page');
     }
 
@@ -664,7 +933,7 @@ class UserController extends Controller
     {
         $userId = Auth::user()->id;
         $littlelink_name = Auth::user()->littlelink_name;
-    
+
         $request->validate([
             'image' => 'required|image|mimes:jpeg,jpg,png,webp,gif|max:2048', // Max file size: 2MB
         ], [
@@ -673,9 +942,9 @@ class UserController extends Controller
             'image.mimes' => __('messages.The image must be') . ' JPEG, JPG, PNG, webP, GIF.',
             'image.max' => __('messages.The image size should not exceed 2MB'),
         ]);
-    
+
         $customBackground = $request->file('image');
-    
+
         if ($customBackground) {
             $directory = base_path('assets/img/background-img/');
             $files = scandir($directory);
@@ -685,26 +954,26 @@ class UserController extends Controller
                     $pathinfo = $userId . "." . pathinfo($file, PATHINFO_EXTENSION);
                 }
             }
-    
+
             // Delete the user's current background image if it exists
             while (findBackground($userId) !== "error.error") {
                 $avatarName = "assets/img/background-img/" . findBackground(Auth::id());
                 unlink(base_path($avatarName));
             }
-                
+
             $fileName = $userId . '_' . time() . "." . $customBackground->extension();
             $customBackground->move(base_path('assets/img/background-img/'), $fileName);
-    
+
             if (extension_loaded('imagick')) {
                 $imagePath = base_path('assets/img/background-img/') . $fileName;
                 $image = new \Imagick($imagePath);
                 $image->stripImage();
                 $image->writeImage($imagePath);
             }
-    
+
             return redirect('/studio/theme');
         }
-    
+
         return redirect('/studio/theme')->with('error', 'Please select a valid image file.');
     }
 
@@ -775,10 +1044,11 @@ class UserController extends Controller
                 $filePath = $themesPath . '/' . $basename;
 
                 if (!is_dir($filePath)) {
-                        
+
                     try {
                         File::delete($filePath);
-                    } catch (exception $e) {}
+                    } catch (exception $e) {
+                    }
 
                 }
 
@@ -862,16 +1132,16 @@ class UserController extends Controller
         // echo Auth::id();
         $id = $request->id;
 
-    if($id == Auth::id() and $id != "1") {
+        if ($id == Auth::id() and $id != "1") {
 
-        Link::where('user_id', $id)->delete();
+            Link::where('user_id', $id)->delete();
 
-        $user = User::find($id);
+            $user = User::find($id);
 
-        Schema::disableForeignKeyConstraints();
-        $user->forceDelete();
-        Schema::enableForeignKeyConstraints();
-    }
+            Schema::disableForeignKeyConstraints();
+            $user->forceDelete();
+            Schema::enableForeignKeyConstraints();
+        }
 
         return redirect('/');
     }
@@ -896,7 +1166,7 @@ class UserController extends Controller
         $userId = Auth::id();
         $user = User::find($userId);
         $links = Link::where('user_id', $userId)->get();
-        
+
         if (!$user) {
             // handle the case where the user is null
             return response()->json(['message' => 'User not found'], 404);
@@ -909,7 +1179,7 @@ class UserController extends Controller
         $fileName = "links-$domain-$date.json";
         $headers = [
             'Content-Type' => 'application/json',
-            'Content-Disposition' => 'attachment; filename="'.$fileName.'"',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
         ];
         return response()->json($userData, 200, $headers);
 
@@ -922,35 +1192,35 @@ class UserController extends Controller
         $userId = Auth::id();
         $user = User::find($userId);
         $links = Link::where('user_id', $userId)->get();
-    
+
         if (!$user) {
             // handle the case where the user is null
             return response()->json(['message' => 'User not found'], 404);
         }
-    
+
         $userData = $user->toArray();
         $userData['links'] = $links->toArray();
 
-        if (file_exists(base_path(findAvatar($userId)))){
+        if (file_exists(base_path(findAvatar($userId)))) {
             $imagePath = base_path(findAvatar($userId));
             $imageData = base64_encode(file_get_contents($imagePath));
             $userData['image_data'] = $imageData;
-    
+
             $imageExtension = pathinfo($imagePath, PATHINFO_EXTENSION);
             $userData['image_extension'] = $imageExtension;
         }
-    
+
         $domain = $_SERVER['HTTP_HOST'];
         $date = date('Y-m-d_H-i-s');
         $fileName = "user_data-$domain-$date.json";
         $headers = [
             'Content-Type' => 'application/json',
-            'Content-Disposition' => 'attachment; filename="'.$fileName.'"',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
         ];
         return response()->json($userData, 200, $headers);
-    
+
         return back();
-    }    
+    }
 
     public function importData(Request $request)
     {
@@ -962,7 +1232,7 @@ class UserController extends Controller
             $file = $request->file('import');
             $jsonString = $file->get();
             $userData = json_decode($jsonString, true);
-    
+
             // Update the authenticated user's profile data if defined in the JSON file
             $user = auth()->user();
             if (isset($userData['name'])) {
@@ -983,29 +1253,29 @@ class UserController extends Controller
                 $userExtension = strtolower($userData['image_extension']);
 
                 if (in_array($userExtension, $allowedExtensions)) {
-                // Decode the image data from Base64
-                $imageData = base64_decode($userData['image_data']);
+                    // Decode the image data from Base64
+                    $imageData = base64_decode($userData['image_data']);
 
-                // Delete the user's current avatar if it exists
-                while (findAvatar(Auth::id()) !== "error.error") {
-                    $avatarName = findAvatar(Auth::id());
-                    unlink(base_path($avatarName));
-                }
-                
-                // Save the image to the correct path with the correct file name and extension
-                $filename = $user->id . '.' . $userExtension;
-                file_put_contents(base_path('assets/img/' . $filename), $imageData);
-                
-                // Update the user's image field with the correct file name
-                $user->image = $filename;
+                    // Delete the user's current avatar if it exists
+                    while (findAvatar(Auth::id()) !== "error.error") {
+                        $avatarName = findAvatar(Auth::id());
+                        unlink(base_path($avatarName));
+                    }
+
+                    // Save the image to the correct path with the correct file name and extension
+                    $filename = $user->id . '.' . $userExtension;
+                    file_put_contents(base_path('assets/img/' . $filename), $imageData);
+
+                    // Update the user's image field with the correct file name
+                    $user->image = $filename;
                 }
             }
 
             $user->save();
-    
+
             // Delete all links for the authenticated user
             Link::where('user_id', $user->id)->delete();
-    
+
             // Loop through each link in $userData and create a new link for the user
             foreach ($userData['links'] as $linkData) {
 
@@ -1018,17 +1288,17 @@ class UserController extends Controller
                 }
 
                 $newLink = new Link();
-    
+
                 // Copy over the link data from $linkData to $newLink
                 $newLink->button_id = $linkData['button_id'];
                 $newLink->link = $linkData['link'];
-                
+
                 // Sanitize the title
                 if ($linkData['button_id'] == 93) {
                     $sanitizedText = strip_tags($linkData['title'], '<a><p><strong><i><ul><ol><li><blockquote><h2><h3><h4>');
                     $sanitizedText = preg_replace("/<a([^>]*)>/i", "<a $1 rel=\"noopener noreferrer nofollow\">", $sanitizedText);
                     $sanitizedText = strip_tags_except_allowed_protocols($sanitizedText);
-                
+
                     $newLink->title = $sanitizedText;
                 } else {
                     $newLink->title = $linkData['title'];
@@ -1041,10 +1311,10 @@ class UserController extends Controller
                 $newLink->custom_icon = $linkData['custom_icon'];
                 $newLink->type = $linkData['type'];
                 $newLink->type_params = $linkData['type_params'];
-    
+
                 // Set the user ID to the current user's ID
                 $newLink->user_id = $user->id;
-    
+
                 // Save the new link to the database
                 $newLink->save();
             }
@@ -1053,16 +1323,16 @@ class UserController extends Controller
             return redirect('studio/profile')->with('error', __('messages.An error occurred while updating your profile.'));
         }
     }
-    
+
 
     // Hanle reports
     function report(Request $request)
     {
         $formData = $request->all();
-    
+
         try {
             Mail::to(env('ADMIN_EMAIL'))->send(new ReportSubmissionMail($formData));
-            
+
             return redirect('report')->with('success', __('messages.report_success'));
         } catch (\Exception $e) {
             return redirect()->back()->with('error', __('messages.report_error'));

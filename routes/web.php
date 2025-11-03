@@ -6,6 +6,7 @@ use App\Http\Controllers\AdminController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\Auth\SocialLoginController;
 use App\Http\Controllers\LinkTypeViewController;
+use App\Http\Controllers\LinkAssociationController;
 use App\Http\Controllers\PagesController;
 use App\Http\Controllers\InstallerController;
 use Illuminate\Support\Facades\Auth;
@@ -103,6 +104,14 @@ Route::get('/studio/index', function(){return redirect(url('dashboard'));});
 Route::get('/studio/add-link', [UserController::class, 'AddUpdateLink'])->name('showButtons');
 Route::post('/studio/edit-link', [UserController::class, 'saveLink'])->name('addLink');
 Route::get('/studio/edit-link/{id}', [UserController::class, 'AddUpdateLink'])->name('showLink')->middleware('link-id');
+// Associated Links editor (per-link)
+Route::get('/studio/links/{id}/associations',
+    [LinkAssociationController::class, 'edit']
+)->name('links.associations.edit')->middleware('link-id');
+Route::put('/studio/links/{id}/associations',
+    [LinkAssociationController::class, 'update']
+)->name('links.associations.update')->middleware('link-id');
+
 Route::post('/studio/sort-link', [UserController::class, 'sortLinks'])->name('sortLinks');
 Route::get('/studio/links', [UserController::class, $LinkPage])->name($LinkPage);
 Route::get('/studio/theme', [UserController::class, 'showTheme'])->name('showTheme');

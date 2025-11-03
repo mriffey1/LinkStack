@@ -52,6 +52,11 @@
                                                                   {{ $link->link }}
                                                                 </div>
                                                                 <span class="badge bg-primary rounded-pill p-2">{{ $link->click_number }} - {{__('messages.clicks')}}</span>
+                                                                <a class="btn btn-sm btn-outline-secondary"
+   href="{{ route('links.associations.edit', $link->id) }}">
+  Associated Links
+</a>
+
                                                               </li>
                                                             @endif
                                                           @endforeach

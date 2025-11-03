@@ -30,4 +30,31 @@ class Link extends Model
           }
         });
     }
+    
+        /**
+     * Links associated to this link (shows as small icons).
+     */
+    public function associatedLinks()
+    {
+        return $this->belongsToMany(
+            self::class,
+            'link_associations',
+            'link_id',
+            'associated_link_id'
+        )->withTimestamps();
+    }
+
+    /**
+     * Reverse lookup: links that list this one as associated.
+     */
+    public function primaryFor()
+    {
+        return $this->belongsToMany(
+            self::class,
+            'link_associations',
+            'associated_link_id',
+            'link_id'
+        )->withTimestamps();
+    }
+
 }

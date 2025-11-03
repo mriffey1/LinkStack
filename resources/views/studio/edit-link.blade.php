@@ -43,7 +43,28 @@
                                 </div>
                     
                                 <div id='link_params' class='col-lg-8'></div>
-                    
+                    {{-- Associated Links --}}
+<div class="form-group" style="margin-top:1rem">
+  <label for="associated_links"><strong>Associated Links</strong></label>
+  <select id="associated_links" name="associated_links[]" multiple
+          style="width:100%; min-height: 160px; padding:.5rem;">
+    @foreach($allLinks as $opt)
+      @continue(isset($LinkData->id) && $opt->id == $LinkData->id) {{-- don’t allow linking to itself --}}
+      @php
+        // Make a friendly label: Platform — Title (URL)
+        $host = parse_url($opt->link ?? '', PHP_URL_HOST) ?: $opt->link;
+        $label = ucfirst(str_replace('default ', '', $opt->platform)) . ' — ' .
+                 ($opt->title ?: $host) . ' (' . $opt->link . ')';
+        $isSelected = !empty($selectedAssoc) && in_array($opt->id, $selectedAssoc);
+      @endphp
+      <option value="{{ $opt->id }}" @if($isSelected) selected @endif>
+        {{ $label }}
+      </option>
+    @endforeach
+  </select>
+  <small class="text-muted">Hold Ctrl/Cmd to select multiple. These will render as small icons next to this button and be hidden from the main list.</small>
+</div>
+
                                 <div class="d-flex align-items-center pt-4">
                                     <a class="btn btn-danger me-3" href="{{ url('studio/links') }}">{{__('messages.Cancel')}}</a>
                                     <button type="submit" class="btn btn-primary me-3">{{__('messages.Save')}}</button>
